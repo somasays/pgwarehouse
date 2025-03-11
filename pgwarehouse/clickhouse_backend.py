@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import sys
 import logging
@@ -91,24 +92,75 @@ class ClickhouseBackend(Backend):
         password = self.clickhouse_password
         database = self.clickhouse_database
         secure = '--secure' if self.clickhouse_secure else ''
-        if echo:
-            echo = "--echo"
-        else:
-            echo = ""
-
+        echo_flag = "--echo" if echo else ""
+        
+        # Sanitize inputs and use subprocess with args list instead of shell=True
         if input_file:
-            cat = "zcat" if input_file.endswith(".gz") else "cat"
-            logger.debug(f"{cat} {input_file} | clickhouse-client --query {sql}")
-            ret = subprocess.run(f'{cat} {input_file} | clickhouse-client -h {host} {secure} -d {database} -u {user} --password "{password}" --query "{sql}"', 
-                                    shell=True, capture_output=True)            
+            # Verify input file existence and is valid
+            if not os.path.exists(input_file):
+                raise ValueError(f"Input file does not exist: {input_file}")
+                
+            if input_file.endswith(".gz"):
+                # Use a list of arguments instead of shell=True
+                cat_cmd = ["zcat", input_file]
+                clickhouse_cmd = [
+                    "clickhouse-client",
+                    "-h", host,
+                    "-d", database,
+                    "-u", user,
+                    "--password", password,
+                    "--query", sql
+                ]
+                if secure:
+                    clickhouse_cmd.insert(1, "--secure")
+                
+                # Use safer pipe implementation
+                logger.debug(f"Executing zcat and piping to clickhouse-client")
+                cat_process = subprocess.Popen(cat_cmd, stdout=subprocess.PIPE)
+                ret = subprocess.run(clickhouse_cmd, stdin=cat_process.stdout, capture_output=True)
+                cat_process.stdout.close()
+                cat_process.wait()
+            else:
+                # For uncompressed files
+                with open(input_file, 'rb') as f:
+                    clickhouse_cmd = [
+                        "clickhouse-client",
+                        "-h", host,
+                        "-d", database,
+                        "-u", user,
+                        "--password", password,
+                        "--query", sql
+                    ]
+                    if secure:
+                        clickhouse_cmd.insert(1, "--secure")
+                    
+                    logger.debug(f"Reading file and piping to clickhouse-client")
+                    ret = subprocess.run(clickhouse_cmd, stdin=f, capture_output=True)
         else:
-            cmd = f'clickhouse-client {echo} -h {host} {secure} -d {database} -u {user} --password "{password}" --query "{sql}"'
+            # No input file, just run the command directly
+            clickhouse_cmd = [
+                "clickhouse-client",
+                "-h", host,
+                "-d", database,
+                "-u", user,
+                "--password", password,
+                "--query", sql
+            ]
+            
+            if secure:
+                clickhouse_cmd.insert(1, "--secure")
+            if echo_flag:
+                clickhouse_cmd.insert(1, echo_flag)
+                
+            # Log query but not with credentials
             logger.debug(f"clickhouse-client --query {sql}")
-            ret = subprocess.run(cmd, 
-                                shell=True, capture_output=True)
+            ret = subprocess.run(clickhouse_cmd, capture_output=True)
+            
         if ret.returncode != 0:
-            logger.error(f"Command failed {ret}: {sql}")
-            raise RuntimeError(f"Command failed {ret}: {sql}")
+            # Don't log the full error as it might contain sensitive information
+            logger.error(f"Command failed with return code {ret.returncode}")
+            raise RuntimeError(f"Command failed with return code {ret.returncode}")
+            
         return ret.stdout.decode('utf-8').strip()
 
     def count_table(self, table: str) -> int:
@@ -180,10 +232,21 @@ class ClickhouseBackend(Backend):
         return self.client.execute(f"DROP TABLE IF EXISTS {table}")
 
     def _query_table(self, table: str, cols: list[str], where: str, limit: int=None):
+        # Validate table name to prevent SQL injection
+        if not re.match(r'^[a-zA-Z0-9_]+$', table):
+            raise ValueError(f"Invalid table name: {table}")
+            
+        # Validate column names to prevent SQL injection
+        for col in cols:
+            if not re.match(r'^[a-zA-Z0-9_]+$', col):
+                raise ValueError(f"Invalid column name: {col}")
+        
         colc = ", ".join(cols)
         wherec = f"WHERE {where}" if where is not None else ""
         limitc = f"LIMIT {limit}" if limit else ""
-        sql = f"select {colc} from {table} {wherec} {limitc}"
+        
+        # Still using string formatting but with validated inputs
+        sql = f"SELECT {colc} FROM {table} {wherec} {limitc}"
         return self.client.execute(sql)
 
     def update_table(self, table: str, schema_file: str, upsert=False, last_modified: str = None, allow_create=False):
