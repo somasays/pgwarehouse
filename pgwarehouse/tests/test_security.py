@@ -7,9 +7,9 @@ import pytest
 import psycopg2
 
 from pgwarehouse.pgwarehouse import PGWarehouse
-from pgwarehouse.clickhouse_backend import ClickhouseBackend
+from pgwarehouse.clickhouse_backend import ClickHouseBackend
 from pgwarehouse.snowflake_backend import SnowflakeBackend
-from pgwarehouse.duckdb_backend import DuckdbBackend
+from pgwarehouse.duckdb_backend import DuckDBBackend
 
 class TestSecurity(unittest.TestCase):
     
@@ -79,7 +79,7 @@ class TestSecurity(unittest.TestCase):
         
         # Initialize backend
         with patch('shutil.which', return_value='/usr/bin/clickhouse-client'):
-            backend = ClickhouseBackend(config, parent)
+            backend = ClickHouseBackend(config, parent)
         
         # Test table name validation in _query_table
         with patch.object(backend, 'client'):
@@ -145,7 +145,7 @@ class TestSecurity(unittest.TestCase):
         config = {'duckdb_path': ':memory:'}
         
         # Initialize backend
-        backend = DuckdbBackend(config, parent)
+        backend = DuckDBBackend(config, parent)
         
         # Test table name validation in _query_table
         # SQL injection attempt should raise ValueError

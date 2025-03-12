@@ -3,7 +3,7 @@ import pytest
 import tempfile
 from unittest.mock import MagicMock, patch
 
-from pgwarehouse.duckdb_backend import DuckdbBackend
+from pgwarehouse.duckdb_backend import DuckDBBackend
 from pgwarehouse.pgwarehouse import PGWarehouse
 
 @pytest.fixture
@@ -22,7 +22,7 @@ def mock_parent():
 
 @pytest.fixture
 def duckdb_backend(config, mock_parent):
-    return DuckdbBackend(config, mock_parent)
+    return DuckDBBackend(config, mock_parent)
 
 def test_initialization(duckdb_backend):
     assert duckdb_backend is not None

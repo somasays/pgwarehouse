@@ -11,12 +11,13 @@ snowflake = pytest.importorskip("snowflake.connector")
 @pytest.fixture
 def config():
     return {
-        'snowflake_account': 'test_account',
-        'snowflake_user': 'test_user',
-        'snowflake_password': 'test_password',
-        'snowflake_database': 'test_db',
-        'snowflake_schema': 'public',
-        'snowflake_warehouse': 'test_warehouse',
+        'snowsql_account': 'test_account',
+        'snowsql_user': 'test_user',
+        'snowsql_pwd': 'test_password',
+        'snowsql_database': 'test_db',
+        'snowsql_schema': 'public',
+        'snowsql_warehouse': 'test_warehouse',
+        'snowsql_role': 'test_role',
         'debug': True
     }
 

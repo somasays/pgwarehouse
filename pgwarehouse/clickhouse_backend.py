@@ -12,7 +12,7 @@ from .backend import Backend, PGBackend
 
 logger = logging.getLogger(__name__)
 
-class ClickhouseBackend(Backend):
+class ClickHouseBackend(Backend):
     ###############
     # Clickhouse
     ###############

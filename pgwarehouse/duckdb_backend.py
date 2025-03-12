@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 
-class DuckdbBackend(Backend):   
+class DuckDBBackend(Backend):   
     ###############
     # DuckDB
     ###############

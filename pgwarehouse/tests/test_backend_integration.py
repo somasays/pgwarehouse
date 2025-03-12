@@ -41,15 +41,18 @@ def backends(mock_parent):
         "clickhouse": {
             "clickhouse_host": "localhost",
             "clickhouse_database": "default",
+            "clickhouse_user": "user",
+            "clickhouse_password": "password",
             "debug": True
         },
         "snowflake": {
-            "snowflake_account": "test_account",
-            "snowflake_user": "test_user",
-            "snowflake_password": "test_password",
-            "snowflake_database": "test_db",
-            "snowflake_schema": "public",
-            "snowflake_warehouse": "test_warehouse",
+            "snowsql_account": "test_account",
+            "snowsql_user": "test_user",
+            "snowsql_pwd": "test_password",
+            "snowsql_database": "test_db",
+            "snowsql_schema": "public",
+            "snowsql_warehouse": "test_warehouse",
+            "snowsql_role": "test_role",
             "debug": True
         }
     }
@@ -62,8 +65,9 @@ def backends(mock_parent):
         ch_client = MagicMock()
         ch_mock.return_value = ch_client
         
-        clickhouse_backend = ClickHouseBackend(configs["clickhouse"], mock_parent)
-        clickhouse_backend.client = ch_client
+        with patch('shutil.which', return_value='/usr/bin/clickhouse-client'):
+            clickhouse_backend = ClickHouseBackend(configs["clickhouse"], mock_parent)
+            clickhouse_backend.client = ch_client
         
         with patch('snowflake.connector.connect') as sf_mock:
             sf_conn = MagicMock()
@@ -109,12 +113,36 @@ class TestBackendIntegration:
         backend._drop_table(table_name)
         
         # 2. Load table
+        # Create a dummy schema file
+        schema_file = os.path.join(tmp_path, f"{table_name}.schema")
+        with open(schema_file, "w") as f:
+            f.write("Column|Type|Collation|Nullable|Default\n")
+            f.write("id|integer||not null|\n")
+            f.write("name|text||not null|\n")
+            f.write("value|double precision||not null|\n")
+            f.write("Indexes:\n")
+            f.write("    \"test_table_pkey\" PRIMARY KEY, btree (id)")
+            
+        mock_parent.parse_schema_file.return_value = {
+            'columns': {
+                'id': 'integer',
+                'name': 'text',
+                'value': 'double precision'
+            },
+            'primary_key_cols': ['id']
+        }
+        
+        # Set up mock iterate_csv_files to return our test CSV file
+        mock_parent.iterate_csv_files.return_value = [
+            (1, os.path.join(csv_dir, "data.csv"))
+        ]
+            
         if backend_name == "snowflake":
             # Handle file operations for Snowflake
             with patch('builtins.open', MagicMock()):
-                backend.load_table(table_name)
+                backend.load_table(table_name, schema_file)
         else:
-            backend.load_table(table_name)
+            backend.load_table(table_name, schema_file)
         
         # 3. Count rows
         if backend_name == "duckdb":
@@ -136,7 +164,7 @@ class TestBackendIntegration:
         # 4. Query table
         if backend_name == "duckdb":
             # For DuckDB, we can actually run the query
-            rows = list(backend._query_table(table_name, ["id", "name"]))
+            rows = list(backend._query_table(table_name, ["id", "name"], None))
             assert len(rows) == 3
             assert rows[0][0] == 1
             assert rows[0][1] == "Alice"
@@ -147,7 +175,7 @@ class TestBackendIntegration:
                 (2, "Bob"),
                 (3, "Charlie")
             ]
-            rows = list(backend._query_table(table_name, ["id", "name"]))
+            rows = list(backend._query_table(table_name, ["id", "name"], None))
             assert len(rows) == 3
             assert rows[0] == (1, "Alice")
         elif backend_name == "snowflake":
@@ -158,7 +186,7 @@ class TestBackendIntegration:
                 (2, "Bob"),
                 (3, "Charlie")
             ]
-            rows = list(backend._query_table(table_name, ["id", "name"]))
+            rows = list(backend._query_table(table_name, ["id", "name"], None))
             assert len(rows) == 3
             assert rows[0] == (1, "Alice")
     
@@ -171,14 +199,14 @@ class TestBackendIntegration:
         
         # First setup the table
         if backend_name == "duckdb":
-            backend.conn.execute("""
+            backend.duck.execute("""
                 CREATE TABLE test_update (
                     id INTEGER, 
                     name VARCHAR,
                     value DOUBLE
                 )
             """)
-            backend.conn.execute("""
+            backend.duck.execute("""
                 INSERT INTO test_update VALUES 
                 (1, 'Alice', 10.5),
                 (2, 'Bob', 20.7)
@@ -199,10 +227,37 @@ class TestBackendIntegration:
         # Test update operations
         if backend_name == "duckdb":
             # For DuckDB, we can actually run the update
-            backend.update_table(table_name, ["id"])
+            # Create a dummy schema file
+            schema_file = os.path.join(tmp_path, f"{table_name}.schema")
+            with open(schema_file, "w") as f:
+                f.write("Column|Type|Collation|Nullable|Default\n")
+                f.write("id|integer||not null|\n")
+                f.write("name|text||not null|\n")
+                f.write("value|double precision||not null|\n")
+                f.write("Indexes:\n")
+                f.write("    \"test_update_pkey\" PRIMARY KEY, btree (id)")
+                
+            mock_parent.parse_schema_file.return_value = {
+                'columns': {
+                    'id': 'integer',
+                    'name': 'text',
+                    'value': 'double precision'
+                },
+                'primary_key_cols': ['id']
+            }
+            
+            # Set up mock iterate_csv_files to return our test CSV file
+            mock_parent.iterate_csv_files.return_value = [
+                (1, os.path.join(csv_dir, "data.csv"))
+            ]
+            
+            # Mock the extract method to return proper values
+            mock_parent.extract.return_value = [1, 3]
+            
+            backend.update_table(table_name, schema_file)
             
             # Verify the update
-            rows = {row[0]: row for row in backend._query_table(table_name, ["id", "name", "value"])}
+            rows = {row[0]: row for row in backend._query_table(table_name, ["id", "name", "value"], None)}
             assert len(rows) == 3
             assert rows[1] == (1, "Alice", 10.5)  # Unchanged
             assert rows[2] == (2, "Bob", 25.0)    # Updated value

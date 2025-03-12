@@ -18,8 +18,8 @@ import tempfile
 
 from .backend import Backend, PGBackend
 from .snowflake_backend import SnowflakeBackend
-from .clickhouse_backend import ClickhouseBackend
-from .duckdb_backend import DuckdbBackend
+from .clickhouse_backend import ClickHouseBackend
+from .duckdb_backend import DuckDBBackend
 
 # Configure secure logging
 logger = logging.getLogger('pgwarehouse')
@@ -81,11 +81,11 @@ class PGWarehouse(PGBackend):
         self.setup_pg_env()
 
         if self.backend_type == 'clickhouse':
-            self.backend = ClickhouseBackend(warehouse_config, self)
+            self.backend = ClickHouseBackend(warehouse_config, self)
         elif self.backend_type == 'snowflake':
             self.backend = SnowflakeBackend(warehouse_config, self)
         elif self.backend_type == 'duckdb':
-            self.backend = DuckdbBackend(warehouse_config, self)
+            self.backend = DuckDBBackend(warehouse_config, self)
         else:
             raise RuntimeError(f"Unknown backend: {self.backend_type}")
 

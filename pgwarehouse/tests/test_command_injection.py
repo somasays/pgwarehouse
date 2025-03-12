@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock, call
 import pytest
 
 from pgwarehouse.pgwarehouse import PGWarehouse
-from pgwarehouse.clickhouse_backend import ClickhouseBackend
+from pgwarehouse.clickhouse_backend import ClickHouseBackend
 from pgwarehouse.snowflake_backend import SnowflakeBackend
 
 
@@ -111,7 +111,7 @@ class TestCommandInjection(unittest.TestCase):
         with patch('clickhouse_driver.Client'):
             with patch('shutil.which', return_value='/usr/bin/clickhouse-client'):
                 # Initialize backend
-                backend = ClickhouseBackend({
+                backend = ClickHouseBackend({
                     'clickhouse_host': 'localhost',
                     'clickhouse_user': 'user',
                     'clickhouse_password': 'pass',

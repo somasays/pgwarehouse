@@ -36,15 +36,17 @@ def mock_client():
 @pytest.fixture
 def clickhouse_backend(config, mock_parent, mock_client):
     with patch('clickhouse_driver.Client', return_value=mock_client):
-        backend = ClickHouseBackend(config, mock_parent)
-        backend.client = mock_client
-        return backend
+        with patch('shutil.which', return_value='/usr/bin/clickhouse-client'):
+            backend = ClickHouseBackend(config, mock_parent)
+            backend.client = mock_client
+            return backend
 
 def test_initialization(config, mock_parent, mock_client):
     with patch('clickhouse_driver.Client', return_value=mock_client):
-        backend = ClickHouseBackend(config, mock_parent)
-        assert backend is not None
-        assert backend.client is not None
+        with patch('shutil.which', return_value='/usr/bin/clickhouse-client'):
+            backend = ClickHouseBackend(config, mock_parent)
+            assert backend is not None
+            assert backend.client is not None
 
 def test_list_tables(clickhouse_backend, mock_client):
     mock_client.execute.return_value = [('table1',), ('table2',)]
