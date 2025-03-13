@@ -8,8 +8,8 @@ import psycopg2
 
 from pgwarehouse.pgwarehouse import PGWarehouse
 
-#BACKEND = 'clickhouse'
-BACKEND = 'duckdb'
+# Configure backends to be tested
+BACKENDS = ['duckdb']  # Add 'clickhouse', 'snowflake' if they're available
 
 def dbsetup(postgresql):
     conn = psycopg2.connect(**postgresql.dsn())
@@ -85,58 +85,64 @@ def table_size(connection, table) -> int:
 def line_count(path) -> int:
     return len(list(open(path).readlines()))
 
-def test_list(connection, out_dir, ch_env):
+@pytest.mark.parametrize("backend_type", BACKENDS)
+def test_list(connection, out_dir, ch_env, backend_type):
     pgw = PGWarehouse(command='list', table=None,
-            data_dir=out_dir, backend_type=BACKEND, debug=True)
+            data_dir=out_dir, backend_type=backend_type, debug=True)
     pgw = PGWarehouse(command='listwh', table=None,
-            data_dir=out_dir, backend_type=BACKEND, debug=True)
+            data_dir=out_dir, backend_type=backend_type, debug=True)
     
-def test_extract(connection, out_dir, ch_env):
+@pytest.mark.parametrize("backend_type", BACKENDS)
+def test_extract(connection, out_dir, ch_env, backend_type):
     for table in ['local_parks','my_orders']:
         pgw = PGWarehouse(command='extract', table=table,
-                    data_dir=out_dir, backend_type=BACKEND, debug=True)
+                    data_dir=out_dir, backend_type=backend_type, debug=True)
         assert os.path.exists(os.path.join(out_dir, f"{table}_data"))
         assert len(glob.glob(os.path.join(out_dir, f"{table}_data", "*"))) > 0
 
-def test_extract_load(connection, out_dir, ch_env):
+@pytest.mark.parametrize("backend_type", BACKENDS)
+def test_extract_load(connection, out_dir, ch_env, backend_type):
     for table in ['local_parks','users10','my_orders']:
         path = os.path.join(os.path.dirname(__file__), 'data', f"{table}.csv")
         pgw = PGWarehouse(command='extract', table=table,
-                    data_dir=out_dir, backend_type=BACKEND, debug=True)
+                    data_dir=out_dir, backend_type=backend_type, debug=True)
         pgw.backend._drop_table(table)
         pgw = PGWarehouse(command='load', table=table,
-                    data_dir=out_dir, backend_type=BACKEND, debug=True)
+                    data_dir=out_dir, backend_type=backend_type, debug=True)
         assert pgw.count_warehouse_table(table) == table_size(connection, table)
 
-def test_reload(connection, out_dir):
+@pytest.mark.parametrize("backend_type", BACKENDS)
+def test_reload(connection, out_dir, backend_type):
     table = 'users10'
     pgw = PGWarehouse(command='extract', table=table,
-                data_dir=out_dir, backend_type=BACKEND, debug=True)
+                data_dir=out_dir, backend_type=backend_type, debug=True)
     pgw.backend._drop_table(table)
     pgw = PGWarehouse(command='load', table=table,
-                data_dir=out_dir, backend_type=BACKEND, debug=True)
+                data_dir=out_dir, backend_type=backend_type, debug=True)
     pgw = PGWarehouse(command='reload', table=table,
-                data_dir=out_dir, backend_type=BACKEND, debug=True)
+                data_dir=out_dir, backend_type=backend_type, debug=True)
     assert pgw.count_warehouse_table(table) == table_size(connection, table)
 
-def test_basic_sync(connection, out_dir):
+@pytest.mark.parametrize("backend_type", BACKENDS)
+def test_basic_sync(connection, out_dir, backend_type):
     pgw = PGWarehouse(command='list',
-                data_dir=out_dir, backend_type=BACKEND)
+                data_dir=out_dir, backend_type=backend_type)
     
     for table in ['local_parks','users10','my_orders']:
         pgw.backend._drop_table(table)
         pgw = PGWarehouse(command='sync', table=table,
-                    data_dir=out_dir, backend_type=BACKEND, debug=True)
+                    data_dir=out_dir, backend_type=backend_type, debug=True)
         assert pgw.count_warehouse_table(table) == table_size(connection, table)
 
-def test_incremental_sync(connection, out_dir):
+@pytest.mark.parametrize("backend_type", BACKENDS)
+def test_incremental_sync(connection, out_dir, backend_type):
     pgw = PGWarehouse(command='list',
-                data_dir=out_dir, backend_type=BACKEND)
+                data_dir=out_dir, backend_type=backend_type)
     
     table = 'users10'
     pgw.backend._drop_table(table)
     pgw = PGWarehouse(command='sync', table=table,
-                data_dir=out_dir, backend_type=BACKEND, debug=True)
+                data_dir=out_dir, backend_type=backend_type, debug=True)
     orig_size = table_size(connection, table)
     assert pgw.count_warehouse_table(table) == orig_size
 
@@ -149,18 +155,19 @@ def test_incremental_sync(connection, out_dir):
 
     # Resync
     pgw = PGWarehouse(command='sync', table=table,
-                data_dir=out_dir, backend_type=BACKEND, debug=True)
+                data_dir=out_dir, backend_type=backend_type, debug=True)
     assert pgw.count_warehouse_table(table) == (orig_size+2)
 
 
-def test_last_modified_sync(connection, out_dir):
+@pytest.mark.parametrize("backend_type", BACKENDS)
+def test_last_modified_sync(connection, out_dir, backend_type):
     pgw = PGWarehouse(command='list',
-                data_dir=out_dir, backend_type=BACKEND)
+                data_dir=out_dir, backend_type=backend_type)
     
     table = 'my_orders'
     pgw.backend._drop_table(table)
     pgw = PGWarehouse(command='sync', table=table,
-                data_dir=out_dir, backend_type=BACKEND, debug=True)
+                data_dir=out_dir, backend_type=backend_type, debug=True)
     orig_size = table_size(connection, table)
     assert pgw.count_warehouse_table(table) == orig_size
 
@@ -176,7 +183,7 @@ def test_last_modified_sync(connection, out_dir):
 
     # Resync
     pgw = PGWarehouse(command='sync', table=table, last_modified='order_updated',
-                data_dir=out_dir, backend_type=BACKEND, debug=True)
+                data_dir=out_dir, backend_type=backend_type, debug=True)
     assert pgw.count_warehouse_table(table) == (orig_size+1)
 
     rows = pgw.backend._query_table(table, ['id','order_amount'], "id in (18,19)")

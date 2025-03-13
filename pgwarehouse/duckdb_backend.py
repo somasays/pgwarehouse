@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import shutil
 
 import duckdb
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 
-class DuckdbBackend(Backend):   
+class DuckDBBackend(Backend):   
     ###############
     # DuckDB
     ###############
@@ -120,10 +121,21 @@ class DuckdbBackend(Backend):
         return self.duck.execute(f"DROP TABLE IF EXISTS {table}")
 
     def _query_table(self, table: str, cols: list[str], where: str, limit: int=None):
-        colc = ", ".join(cols)
+        # Validate table name to prevent SQL injection
+        if not re.match(r'^[a-zA-Z0-9_]+$', table):
+            raise ValueError(f"Invalid table name: {table}")
+            
+        # Validate column names to prevent SQL injection
+        for col in cols:
+            if not re.match(r'^[a-zA-Z0-9_]+$', col):
+                raise ValueError(f"Invalid column name: {col}")
+        
+        # Quote identifiers properly
+        colc = ", ".join([f'"{col}"' for col in cols])
         wherec = f"WHERE {where}" if where is not None else ""
         limitc = f"LIMIT {limit}" if limit else ""
-        sql = f"select {colc} from {table} {wherec} {limitc}"
+        
+        sql = f'SELECT {colc} FROM "{table}" {wherec} {limitc}'
         return self.duck.execute(sql).fetchall()
 
     def update_table(self, table: str, schema_file: str, upsert=False, last_modified: str = None, allow_create=False):

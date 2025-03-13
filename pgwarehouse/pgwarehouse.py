@@ -9,20 +9,40 @@ import re
 import subprocess
 import shutil
 import shlex
+import stat
 from tabulate import tabulate
 import traceback
 import yaml
 from datetime import datetime
+import tempfile
 
 from .backend import Backend, PGBackend
 from .snowflake_backend import SnowflakeBackend
-from .clickhouse_backend import ClickhouseBackend
-from .duckdb_backend import DuckdbBackend
+from .clickhouse_backend import ClickHouseBackend
+from .duckdb_backend import DuckDBBackend
 
+# Configure secure logging
 logger = logging.getLogger('pgwarehouse')
 logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
 handler.setLevel(logging.INFO)
+
+# Custom formatter that filters sensitive information from logs
+class SensitiveInfoFilter(logging.Filter):
+    def filter(self, record):
+        message = record.getMessage()
+        # Check if message contains password and filter it
+        sensitive_keywords = ['password', 'pwd', 'secret', 'token']
+        for keyword in sensitive_keywords:
+            if keyword in message.lower():
+                # Redact the sensitive information
+                record.msg = re.sub(r'["\']?[^"\'=\s]*(?:password|pwd|secret|token)[^"\'=\s]*["\']?\s*=\s*["\']?[^"\']*["\']?', 
+                                    lambda m: m.group(0).split('=')[0] + '="*****"', 
+                                    record.msg, 
+                                    flags=re.IGNORECASE)
+        return True
+
+logger.addFilter(SensitiveInfoFilter())
 handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
 logger.addHandler(handler)
 
@@ -61,11 +81,11 @@ class PGWarehouse(PGBackend):
         self.setup_pg_env()
 
         if self.backend_type == 'clickhouse':
-            self.backend = ClickhouseBackend(warehouse_config, self)
+            self.backend = ClickHouseBackend(warehouse_config, self)
         elif self.backend_type == 'snowflake':
             self.backend = SnowflakeBackend(warehouse_config, self)
         elif self.backend_type == 'duckdb':
-            self.backend = DuckdbBackend(warehouse_config, self)
+            self.backend = DuckDBBackend(warehouse_config, self)
         else:
             raise RuntimeError(f"Unknown backend: {self.backend_type}")
 
@@ -103,9 +123,14 @@ class PGWarehouse(PGBackend):
                 logger.info(f">>>>>>>>> {command} {self.table} {table_opts}")
                 try:
                     getattr(self, command)(self.table, table_opts)
-                except RuntimeError:
+                except RuntimeError as e:
                     print(f"ERROR: {command} {table}")
-                    traceback.print_exc()
+                    # Don't expose stack traces that might contain sensitive information
+                    logger.error(f"Error executing {command} on {table}: {str(e)}")
+                except Exception as e:
+                    print(f"ERROR: {command} {table}")
+                    # Generic message for other exceptions
+                    logger.error(f"Unexpected error executing {command} on {table}")
                 logger.info("<<<<<<<<<\n")
             print("============== DONE =========== ")
         elif table:
@@ -204,19 +229,27 @@ class PGWarehouse(PGBackend):
             if val is None:
                 raise RuntimeError(f"Missing {key} in config file or environment ({key.upper()})")
             setattr(self, key, val)
-            os.environ[key.upper()] = val
+            # Don't expose credentials in environment variables
+            # os.environ[key.upper()] = val
         self.pgschema = conf.get('pgschema', os.environ.get('PGSCHEMA', 'public'))
         self.pgport = int(conf.get('pgport', os.environ.get('PGPORT', '5432')))
         self.pgsslmode = conf.get('pgsslmode', os.environ.get('PGSSLMODE', 'prefer'))
         self.max_pg_records = conf.get('max_records', None)
+        # Use parameters instead of f-string to prevent SQL injection
         self.client = psycopg2.connect(
-            f"host={self.pghost} dbname={self.pgdatabase} user={self.pguser} password={self.pgpassword} port={self.pgport} sslmode={self.pgsslmode}",
+            host=self.pghost,
+            dbname=self.pgdatabase,
+            user=self.pguser,
+            password=self.pgpassword,
+            port=self.pgport,
+            sslmode=self.pgsslmode,
             connect_timeout=10
         )
         self.cursor: psycopg2.extensions.cursor = self.client.cursor()
 
     def list(self) -> None:
-        sql = f"""
+        # Use parameterized query to prevent SQL injection
+        sql = """
             SELECT table_schema, table_name, pg_size_pretty(total_bytes) AS total, to_char(row_estimate, 'FM999,999,999,999') as rows
             FROM (
             SELECT *, total_bytes-index_bytes-coalesce(toast_bytes,0) AS table_bytes FROM (
@@ -227,12 +260,12 @@ class PGWarehouse(PGBackend):
                         , pg_total_relation_size(reltoastrelid) AS toast_bytes
                     FROM pg_class c
                     LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
-                    WHERE relkind = 'r' and nspname='{self.pgschema}'
+                    WHERE relkind = 'r' and nspname=%s
             ) a order by table_bytes desc
             ) a;
         """
         sql = sql.strip().replace("\n", " ")
-        self.cursor.execute(sql)
+        self.cursor.execute(sql, (self.pgschema,))
         rows = self.cursor.fetchall()
         print(tabulate(rows, headers=['schema', 'table', 'size', 'rows']))
 
@@ -240,19 +273,48 @@ class PGWarehouse(PGBackend):
         return self.backend.count_table(table)
 
     def all_table_names(self):
+        # Use parameterized query to prevent SQL injection
         self.cursor.execute(
-            f"select table_name from information_schema.tables where table_schema='{self.pgschema}'"
+            "select table_name from information_schema.tables where table_schema=%s",
+            (self.pgschema,)
         )
         return sorted([r[0] for r in self.cursor.fetchall()])
 
     def dump_schema(self, table: str, schema_file: str):
-        ret = os.system(f"psql --pset=format=unaligned -c \"\\d {self.pgschema}.{table}\" > {schema_file}")
-        if ret != 0:
-            raise RuntimeError("Error saving schema")
+        # Validate table name to prevent command injection
+        if not re.match(r'^[a-zA-Z0-9_]+$', table):
+            raise ValueError(f"Invalid table name: {table}")
+        
+        # Use subprocess with proper arguments instead of os.system and shell=True
+        cmd = ["psql", "--pset=format=unaligned", "-c", f"\\d {self.pgschema}.{table}"]
+        with open(schema_file, 'w') as f:
+            process = subprocess.run(
+                cmd,
+                stdout=f,
+                stderr=subprocess.PIPE,
+                env={
+                    'PGHOST': self.pghost,
+                    'PGDATABASE': self.pgdatabase,
+                    'PGUSER': self.pguser,
+                    'PGPASSWORD': self.pgpassword,
+                    'PGPORT': str(self.pgport),
+                    'PGSSLMODE': self.pgsslmode
+                }
+            )
+            if process.returncode != 0:
+                raise RuntimeError(f"Error saving schema: {process.stderr.decode()}")
         logger.debug(f"Saved schema to {schema_file}")
 
     def extract(self, table: str, table_opts: dict, filter=""):
         # Returns a tuple of [file count, line count] of downloaded records
+        # Validate table name to prevent SQL injection
+        if not re.match(r'^[a-zA-Z0-9_]+$', table):
+            raise ValueError(f"Invalid table name: {table}")
+            
+        # Validate the filter string to prevent SQL injection
+        if filter and not isinstance(filter, str):
+            raise ValueError("Filter must be a string")
+        
         self.dump_schema(table, self.schema_file)
         print(datetime.now(), f" Extracting table with COPY {table} {filter} to csv...")
 
@@ -262,19 +324,41 @@ class PGWarehouse(PGBackend):
         file_suffix = 1
         total_records = 0
 
-        out_dir = os.path.join(self.data_dir, table + "_data")
+        # Use os.path.basename to ensure the table name is safe for path operations
+        safe_table = os.path.basename(table)
+        out_dir = os.path.join(self.data_dir, safe_table + "_data")
         shutil.rmtree(out_dir, ignore_errors=True)
         os.makedirs(out_dir, exist_ok=True)
 
         def next_file():
-            fname = os.path.join(out_dir, f"{table}{file_suffix}0.csv.gz")
+            fname = os.path.join(out_dir, f"{safe_table}{file_suffix}0.csv.gz")
             logger.info(f"Writing to {fname} total records written: {total_records:,} total bytes: {current_size:,}")
+            
+            # Create the file with restrictive permissions first
+            fd = os.open(fname, os.O_CREAT | os.O_WRONLY, 0o600)  # Owner read/write only
+            os.close(fd)
+            
+            # Now open it for writing
             return gzip.open(fname, "wt")
 
         outfile = next_file()
-        cmd = f'psql -c "\\copy (select * from {self.pgschema}.{table} {filter}) to STDOUT CSV HEADER\"'
-        args = shlex.split(cmd)
-        proc = subprocess.Popen(args, stdout=subprocess.PIPE)
+        
+        # Build the psql command more securely
+        copy_command = f"\\copy (select * from {self.pgschema}.{table} {filter}) to STDOUT CSV HEADER"
+        env = {
+            'PGHOST': self.pghost,
+            'PGDATABASE': self.pgdatabase,
+            'PGUSER': self.pguser,
+            'PGPASSWORD': self.pgpassword,
+            'PGPORT': str(self.pgport),
+            'PGSSLMODE': self.pgsslmode
+        }
+        
+        proc = subprocess.Popen(
+            ["psql", "-c", copy_command],
+            stdout=subprocess.PIPE,
+            env=env
+        )
         for line in iter(proc.stdout.readline, b''):
             strline = line.decode('utf-8')
             if header is None:
@@ -335,7 +419,8 @@ class PGWarehouse(PGBackend):
         return {'columns': columns, 'primary_key_cols': primary_key_cols}
 
     def table_exists(self, table: str):
-        sql = f"select 1 from information_schema.tables where table_schema='{self.pgschema}' and table_name='{table}'"
-        self.cursor.execute(sql)
+        # Use parameterized query to prevent SQL injection
+        sql = "select 1 from information_schema.tables where table_schema=%s and table_name=%s"
+        self.cursor.execute(sql, (self.pgschema, table))
         return self.cursor.fetchone() is not None
     

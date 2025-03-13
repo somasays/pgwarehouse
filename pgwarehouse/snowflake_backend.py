@@ -1,6 +1,7 @@
 from datetime import date
 import logging
 import os
+import re
 import shutil
 import subprocess
 
@@ -10,8 +11,17 @@ from .backend import Backend, PGBackend
 
 logger = logging.getLogger('pgwarehouse')
 
-def return_output(cmd):
-    val = subprocess.run(cmd, shell=True, capture_output=True, check=True)
+def return_output(cmd_args):
+    """
+    Execute a command and return its output safely
+    
+    Args:
+        cmd_args: A list of command arguments to be passed to subprocess
+        
+    Returns:
+        The stdout output from the command
+    """
+    val = subprocess.run(cmd_args, capture_output=True, check=True)
     return val.stdout.decode('utf-8').strip()
 
 class SnowflakeBackend(Backend):
@@ -59,7 +69,15 @@ class SnowflakeBackend(Backend):
         sflogger.addHandler(self.parent.get_log_handler())
 
     def table_exists(self, table: str):
-        self.snow_cursor.execute(f"select count(*) from information_schema.tables where table_name ilike '{table}'")
+        # Validate table name to prevent SQL injection
+        if not re.match(r'^[a-zA-Z0-9_]+$', table):
+            raise ValueError(f"Invalid table name: {table}")
+            
+        # Use parameter binding to prevent SQL injection
+        self.snow_cursor.execute(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name ILIKE %s", 
+            (table,)
+        )
         return self.snow_cursor.fetchone()[0] >= 1
 
     def count_table(self, table: str) -> int:
@@ -69,10 +87,21 @@ class SnowflakeBackend(Backend):
         return self.snow_cursor.execute("DROP TABLE IF EXISTS {self.snowsql_schema}.{table}")
 
     def _query_table(self, table: str, cols: list[str], where: str, limit: int=None):
-        colc = ", ".join(cols)
+        # Validate table name to prevent SQL injection
+        if not re.match(r'^[a-zA-Z0-9_]+$', table):
+            raise ValueError(f"Invalid table name: {table}")
+            
+        # Validate column names to prevent SQL injection
+        for col in cols:
+            if not re.match(r'^[a-zA-Z0-9_]+$', col):
+                raise ValueError(f"Invalid column name: {col}")
+                
+        # Quote identifiers properly
+        colc = ", ".join([f'"{col}"' for col in cols])
         wherec = f"WHERE {where}" if where is not None else ""
         limitc = f"LIMIT {limit}" if limit else ""
-        sql = f"select {colc} from {self.snowsql_schema}.{table} {wherec} {limitc}"
+        
+        sql = f'SELECT {colc} FROM "{self.snowsql_schema}"."{table}" {wherec} {limitc}'
         return self.snow_cursor.execute(sql)
 
     def pg_to_sf_root_type(self, pgtype: str):

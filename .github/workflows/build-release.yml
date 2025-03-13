@@ -1,0 +1,92 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: 'Skip running tests'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install poetry build twine
+          poetry install
+
+      - name: Run tests
+        if: ${{ !inputs.skip_tests }}
+        run: |
+          # Skip tests requiring external dependencies
+          poetry run python -m pytest pgwarehouse/tests/test_backend.py \
+                 pgwarehouse/tests/test_duckdb_backend.py \
+                 pgwarehouse/tests/test_command_injection.py \
+                 pgwarehouse/tests/test_security.py \
+                 pgwarehouse/tests/test_log_security.py \
+                 -k "not clickhouse and not snowflake and not postgres" \
+                 --cov=pgwarehouse
+
+      - name: Extract version
+        id: get_version
+        run: echo "VERSION=$(poetry version --short)" >> $GITHUB_OUTPUT
+
+      - name: Check version match with tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PACKAGE_VERSION="${{ steps.get_version.outputs.VERSION }}"
+          echo "Tag version: $TAG_VERSION"
+          echo "Package version: $PACKAGE_VERSION"
+          if [ "$TAG_VERSION" != "$PACKAGE_VERSION" ]; then
+            echo "Error: Tag version ($TAG_VERSION) does not match package version ($PACKAGE_VERSION)"
+            exit 1
+          fi
+
+      - name: Build package
+        run: |
+          poetry build
+
+      - name: Check distribution package
+        run: |
+          python -m twine check dist/*
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+      # This step is included but intentionally commented out as requested
+      - name: Upload to PyPI (Disabled)
+        if: ${{ false }}  # This condition ensures this step is always skipped
+        run: |
+          # python -m twine upload --username ${{ secrets.PYPI_USERNAME }} --password ${{ secrets.PYPI_PASSWORD }} dist/*
+          echo "PyPI upload step is disabled as requested"
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
